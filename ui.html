@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head></head>
+<body>
+  <script>
+    let jsPDFLoaded = false;
+    let jsPDF = null;
+    let pendingGenerate = null;
+
+    // Load jsPDF dynamically
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+    script.onload = () => {
+      jsPDFLoaded = true;
+      jsPDF = window.jspdf.jsPDF;
+      if (pendingGenerate) {
+        generatePDF(pendingGenerate);
+      }
+    };
+    script.onerror = () => {
+      parent.postMessage({ pluginMessage: { type: 'error', message: 'Failed to load PDF library' } }, '*');
+    };
+    document.head.appendChild(script);
+
+    let slides = [];
+
+    function generatePDF(msg) {
+      slides.sort((a, b) => a.index - b.index);
+
+      if (slides.length === 0) {
+        parent.postMessage({ pluginMessage: { type: 'error', message: 'No slides received' } }, '*');
+        return;
+      }
+
+      try {
+        const firstSlide = slides[0];
+        const pdfWidth = firstSlide.width;
+        const pdfHeight = firstSlide.height;
+
+        const pdf = new jsPDF({
+          orientation: pdfWidth > pdfHeight ? 'landscape' : 'portrait',
+          unit: 'px',
+          format: [pdfWidth, pdfHeight],
+          compress: false
+        });
+
+        for (let i = 0; i < slides.length; i++) {
+          const slide = slides[i];
+
+          if (i > 0) {
+            pdf.addPage([pdfWidth, pdfHeight], pdfWidth > pdfHeight ? 'landscape' : 'portrait');
+          }
+
+          pdf.addImage(slide.data, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'NONE');
+        }
+
+        const fileName = msg.fileName || 'slides';
+        pdf.save(`${fileName}.pdf`);
+
+        parent.postMessage({ pluginMessage: { type: 'done', count: slides.length } }, '*');
+      } catch (err) {
+        parent.postMessage({ pluginMessage: { type: 'error', message: err.message } }, '*');
+      }
+    }
+
+    window.onmessage = async (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === 'slide-image') {
+        slides.push({
+          index: msg.index,
+          data: msg.imageData,
+          width: msg.width,
+          height: msg.height
+        });
+      }
+
+      if (msg.type === 'generate-pdf') {
+        if (jsPDFLoaded) {
+          generatePDF(msg);
+        } else {
+          pendingGenerate = msg;
+        }
+      }
+    };
+  </script>
+</body>
+</html>

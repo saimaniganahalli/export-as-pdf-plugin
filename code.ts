@@ -1,20 +1,102 @@
-// This file holds the main code for plugins. Code in this file has access to
-// the *figma document* via the figma global object.
-// You can access browser APIs in the <script> tag inside "ui.html" which has a
-// full browser environment (See https://www.figma.com/plugin-docs/how-plugins-run).
+// Export all slides as a single PDF
 
-// This plugin creates slides and puts the user in grid view.
-const numberOfSlides = 5;
+// Hidden UI - only used for PDF generation (browser APIs needed)
+figma.showUI(__html__, { visible: false });
 
-const nodes: SlideNode[] = [];
-for (let i = 0; i < numberOfSlides; i++) {
-  const slide = figma.createSlide();
-  nodes.push(slide);
+async function exportSlidesAsPDF() {
+  // Small delay to ensure UI is ready
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  // Load all pages first (required by Figma API)
+  await figma.loadAllPagesAsync();
+
+  // Get all slides from SLIDE_GRID > SLIDE_ROW > SLIDE structure
+  let slides: SceneNode[] = [];
+
+  function findSlides(node: any) {
+    if (node.type === 'SLIDE') {
+      slides.push(node);
+      return;
+    }
+    if (node.children) {
+      for (const child of node.children) {
+        findSlides(child);
+      }
+    }
+  }
+
+  for (const page of figma.root.children) {
+    for (const child of page.children) {
+      if (child.type === 'SLIDE_GRID') {
+        findSlides(child);
+      }
+    }
+  }
+
+  if (slides.length === 0) {
+    figma.notify('No slides found. Make sure this is a Figma Slides document.', { error: true });
+    figma.closePlugin();
+    return;
+  }
+
+  figma.notify(`Found ${slides.length} slides. Exporting...`);
+
+  // Tell UI how many slides to expect
+  figma.ui.postMessage({
+    type: 'init',
+    totalSlides: slides.length
+  });
+
+  // Export each slide as PNG and send to UI
+  for (let i = 0; i < slides.length; i++) {
+    const slide = slides[i];
+
+    figma.notify(`Exporting slide ${i + 1} of ${slides.length}...`, { timeout: 1000 });
+
+    try {
+      const imageData = await slide.exportAsync({
+        format: 'PNG',
+        constraint: { type: 'SCALE', value: 2 }  // 2x scale for good quality without memory issues
+      });
+
+      const base64 = figma.base64Encode(imageData);
+
+      figma.ui.postMessage({
+        type: 'slide-image',
+        index: i,
+        imageData: `data:image/png;base64,${base64}`,
+        width: slide.width,
+        height: slide.height
+      });
+    } catch (error) {
+      console.error(`Error exporting slide ${i}:`, error);
+      figma.notify(`Error exporting slide ${i + 1}`, { error: true });
+    }
+  }
+
+  figma.notify('Generating PDF...');
+
+  // Get document name for the PDF filename
+  const fileName = figma.root.name || 'slides';
+
+  // Tell UI to generate the PDF
+  figma.ui.postMessage({
+    type: 'generate-pdf',
+    fileName: fileName
+  });
 }
 
-figma.viewport.slidesView = 'grid';
-figma.currentPage.selection = nodes;
+// Handle messages from UI
+figma.ui.onmessage = (msg) => {
+  if (msg.type === 'done') {
+    figma.notify(`PDF exported with ${msg.count} slides!`, { timeout: 3000 });
+    figma.closePlugin();
+  }
+  if (msg.type === 'error') {
+    figma.notify(`Error: ${msg.message}`, { error: true });
+    figma.closePlugin();
+  }
+};
 
-// Make sure to close the plugin when you're done. Otherwise the plugin will
-// keep running, which shows the cancel button at the bottom of the screen.
-figma.closePlugin();
+// Start the export
+exportSlidesAsPDF();
